@@ -5,19 +5,27 @@ import java.util.Optional;
 public class KeyedExchanger<T> {
 
     private final Object monitor = new Object();
-    Map<Integer, T> data = new HashMap<>();
+    private Map<Integer, Request> data = new HashMap<>();
+
+    private static class Request<T>{
+        T value;
+        Request(T value){this.value=value;}
+    }
 
     public Optional<T> exchange(int ky, T mydata, int timeout) throws InterruptedException {
         synchronized(monitor) {
-
-            T kyData;
+            Request request;
             //if first thread is ready for exchange
-            if ((kyData = data.get(ky)) != null) {
-                data.put(ky, mydata); //data.remove(ky);
+            if ((request = data.get(ky)) != null) {
+                data.remove(ky); //remove the request from Map
+                T aux = (T)request.value; //saves value from first thread
+                request.value = mydata; //secon thread updates value
                 monitor.notifyAll();
-                return Optional.of(kyData);
-            } else
-                data.put(ky, mydata);
+                return Optional.of(aux);
+            } else {
+                 request = new Request(mydata);
+                data.put(ky,request);
+            }
 
             TimeoutHolder th = new TimeoutHolder(timeout);
             long millisTimeout;
@@ -27,6 +35,7 @@ public class KeyedExchanger<T> {
                         if ((millisTimeout = th.value()) <= 0) {
                             // the timeout limit has expired - here we are sure that the
                             // acquire resquest is still pending.
+                            data.remove(ky);
                             return  Optional.empty();
                         }
                         monitor.wait(millisTimeout);
@@ -43,12 +52,9 @@ public class KeyedExchanger<T> {
                     }
                     throw ie;
                 }
-            } while (data.get(ky) == mydata);
-
-            kyData = data.get(ky);
-            data.remove(ky);
+            } while (data.get(ky) != null);
             // the request acquire operation completed successfully
-            return Optional.of(kyData);
+            return Optional.of((T)request.value);
         }
     }
 }

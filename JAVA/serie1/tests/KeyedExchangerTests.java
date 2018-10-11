@@ -1,6 +1,7 @@
 import org.junit.Before;
 import org.junit.jupiter.api.Test;
 
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -8,11 +9,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class KeyedExchangerTests {
 
     KeyedExchanger<String> exchanger = new KeyedExchanger<>();
-    String[] res;
+
 
     @Test
     public void test_simple_exchange() throws InterruptedException {
-
+        String[] res = new String[2];
         Thread t = new Thread(() -> {
             try {
                 res[0] = exchanger.exchange(1, "data1", 2000).get();
@@ -38,27 +39,40 @@ public class KeyedExchangerTests {
 
     @Test
     public void test_timeout_exchange() throws InterruptedException {
-        String[] res = new String[2];
+        Optional<String>[] res = new Optional[3];
         Thread t = new Thread(() -> {
             try {
-                res[0] = exchanger.exchange(1, "data1", 2000).get();
+                res[0] = exchanger.exchange(1, "data1", 2000);
             } catch (InterruptedException e) {
                 //TODO
             }
         });
         Thread t2 = new Thread(() -> {
             try {
-                res[1] = exchanger.exchange(1, "data2", 2000).get();
+                res[1] = exchanger.exchange(1, "data2", -1);
             } catch (InterruptedException e) {
                 //TODO
             }
         });
         t.start();
+        TimeUnit.SECONDS.sleep(3);
         t2.start();
 
-        TimeUnit.SECONDS.sleep(3);
-        assertEquals(null, res[0]);
-        assertEquals(null, res[1]); //FIXME ????
+        TimeUnit.SECONDS.sleep(1);
+        assertEquals(false,res[0].isPresent());
+        assertEquals(null, res[1]); //data1
+
+        Thread t3 = new Thread(() -> {
+            try {
+                res[2] = exchanger.exchange(1, "data3", -1);
+            } catch (InterruptedException e) {
+                //TODO
+            }
+        });
+        t3.start();
+        TimeUnit.SECONDS.sleep(1);
+        assertEquals("data3", res[1].get());
+        assertEquals("data2", res[2].get());
     }
 
     @Test
@@ -103,4 +117,7 @@ public class KeyedExchangerTests {
         assertEquals("data4", res[2]);
         assertEquals("data3", res[3]);
     }
+
+
+    //public void test_third_thread_in_the_middle_exchange()
 }
