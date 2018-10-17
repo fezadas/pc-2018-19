@@ -1,4 +1,4 @@
-import org.junit.Before;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -10,7 +10,6 @@ public class KeyedExchangerTests {
 
     KeyedExchanger<String> exchanger = new KeyedExchanger<>();
 
-
     @Test
     public void test_simple_exchange() throws InterruptedException {
         String[] res = new String[2];
@@ -18,7 +17,7 @@ public class KeyedExchangerTests {
             try {
                 res[0] = exchanger.exchange(1, "data1", 2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
 
@@ -26,7 +25,7 @@ public class KeyedExchangerTests {
             try {
                 res[1] = exchanger.exchange(1, "data2", 2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         t.start();
@@ -44,14 +43,14 @@ public class KeyedExchangerTests {
             try {
                 res[0] = exchanger.exchange(1, "data1", 2000);
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         Thread t2 = new Thread(() -> {
             try {
                 res[1] = exchanger.exchange(1, "data2", -1);
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         t.start();
@@ -66,7 +65,7 @@ public class KeyedExchangerTests {
             try {
                 res[2] = exchanger.exchange(1, "data3", -1);
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         t3.start();
@@ -82,28 +81,28 @@ public class KeyedExchangerTests {
             try {
                 res[0] = exchanger.exchange(1, "data1", 2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         Thread t2 = new Thread(() -> {
             try {
                 res[1] = exchanger.exchange(1, "data2", 2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         Thread t3 = new Thread(() -> {
             try {
                 res[2] = exchanger.exchange(3, "data3", 2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         Thread t4 = new Thread(() -> {
             try {
                 res[3] = exchanger.exchange(3, "data4", 2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
         t.start();

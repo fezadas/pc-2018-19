@@ -42,10 +42,10 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Consumer.cs" />
-    <Compile Include="IEvent.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Subscriber.cs" />
+    <Compile Include="TimeoutHolder.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
