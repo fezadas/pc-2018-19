@@ -143,8 +143,15 @@ public class MessageQueue<T> {
         public boolean await(int timeout) throws InterruptedException {
             try {
                 monitor.lock();
-
-                OperationStatus operation = pendingMessages.getFirst();
+                /*OperationStatus operation = null; //FIXME: FALAR COM ENGENHEIRO
+                for (int idx = 0 ; idx <= pendingMessages.size(); ++idx) {
+                    if((operation = pendingMessages.get(idx)) == this){
+                        pendingMessages.remove(idx);
+                        break;
+                    }
+                }*/
+                OperationStatus operation = this;
+                //OperationStatus operation = pendingMessages.getFirst(); !!! ERRO !!!
                 do {
                     TimeoutHolder th = new TimeoutHolder(timeout);
                     try {
