@@ -9,30 +9,37 @@ namespace PC_SERIE_1
     {
         private readonly Object monitor = new Object();
         private int maxPending;
+        private Boolean toShutdown;
+        private Object shutdownCondition;
         Dictionary<Type, List<Subscriber>> subscribers = new Dictionary<Type, List<Subscriber>>();
 
-        public EventBus(int maxPending) { this.maxPending = maxPending; }
+        public EventBus(int maxPending) {
+            this.maxPending = maxPending;
+            toShutdown = false;
+            shutdownCondition = new object();
+        }
 
         //ACQUIRE
         public void SubscribeEvent<T>(Action<T> handler) where T : class
         {
+            Subscriber sub;
             lock (monitor)
             {
                 List<Subscriber> subs;
                 if (subscribers.TryGetValue(typeof(T), out subs))
                 {
-                    subs.Add(new Subscriber(maxPending));
+                    subs.Add((sub = new Subscriber(maxPending)));
                 }
                 else
                 {
                     subs = new List<Subscriber>();
-                    subs.Add(new Subscriber(maxPending));
+                    subs.Add((sub = new Subscriber(maxPending)));
                     subscribers.Add(typeof(T), subs);
                 }
             }
 
             List<Object> events;
-            while((events = GetEvents(typeof(T))) != null){
+            while((events = GetEvents(sub)) != null) {
                 foreach(Object ev in events)
                 {
                     try
@@ -41,9 +48,20 @@ namespace PC_SERIE_1
                     }
                     catch (ThreadInterruptedException)
                     {
-
-                    }
+                        break; //code below!     |
+                    }          //                V                       
                 }
+            }
+
+            //retirar subscritor do mapa depois de terem sido processados todos os eventos
+            //e tiver sido chamado o shutDown ou houve interrupcao
+
+            lock (monitor)
+            {
+                RemoveSubscriber(typeof(T), sub);
+
+                if (subscribers.Count == 0)
+                    Monitor.Pulse(shutdownCondition);
             }
         }
         
@@ -51,77 +69,96 @@ namespace PC_SERIE_1
         {
             lock (monitor)
             {
+                if (toShutdown)
+                    throw new InvalidOperationException();
+
                 List<Subscriber> subs;
                 if (subscribers.TryGetValue(typeof(E), out subs)) {
                     foreach (Subscriber s in subs) {
-                        if (s.AddEvent(message)) // se não ultrapassa o maxPending
-                            Monitor.Pulse(s.condition);
+                        s.TryAddEvent(message);
                     }
+                    Monitor.Pulse(subscribers);
                 }
+
             }
         }
 
         public void Shutdown()
-        { // bloquear a thread ate que todos os pedidos sejam atendidos }
-
-
-
-        }
-
-        public List<Object> GetEvents(Type type)
-        {
-            lock (monitor)
+        { 
+            lock(monitor)
             {
-                /**
-                 
-                 * /
-
-                //TimeoutHolder th = new TimeoutHolder(timeout);
-                do
-                {
-                    /*if ((timeout = th.Value) == 0)
-                    {
-                        // the timeout limit has expired - here we are sure that the acquire resquest
-                        // is still pending. So, we remove the request from the queue and return failure.
-                        reqQueue.Remove(request);
-
-                        // After remove the request of the current thread from queue, *it is possible*
-                        // that the current synhcronization allows now to satisfy another queued acquires.
-                        if (CurrentSynchStateAllowsAquire())
-                            PerformPossibleAcquires();
-
-                        result = default(AcquireResult);
-                        return false;
-                    }*/
+                toShutdown = true;
+                do {
                     try
                     {
-                        Monitor.Wait(monitor);
+                        Monitor.Wait(shutdownCondition);
                     }
                     catch (ThreadInterruptedException)
                     {
-                        // the thread may be interrupted when the requested acquire operation
-                        // is already performed, in which case you can no longer give up
-                        if (request.done)
+                        if (subscribers.Count==0)
                         {
-                            // re-assert the interrupt and return normally, indicating to the
-                            // caller that the operation was successfully completed
                             Thread.CurrentThread.Interrupt();
                             break;
                         }
-                        // remove the request from the queue and throw ThreadInterruptedException
-                        reqQueue.Remove(request);
-
-                        // After remove the request of the current thread from queue, *it is possible*
-                        // that the current synhcronization allows now to satisfy another queued acquires.
-                        if (CurrentSynchStateAllowsAquire())
-                            PerformPossibleAcquires();
-
-                        throw;      // ThreadInterruptedException
+                        throw;
                     }
-                } while (!request.done);
-                // the request acquire operation completed successfully
-                result = request.acquireResult;
-                return true;
+                } while (true);
+            }
+        }
+
+        public void RemoveSubscriber(Type type, Subscriber subscriber)
+        {
+            List<Subscriber> subs;
+           
+            if (subscribers.TryGetValue(type, out subs))
+            {
+                subs.Remove(subscriber);
+                //se foi o ultimo subscritor a ser removido, eliminar a entrada no dicionario
+                if(subs.Count == 0) subscribers.Remove(type);
+            }
+            
+        }
+
+        public List<Object> GetEvents(Subscriber subscriber)
+        {
+            lock (monitor)
+            {
+
+                List<Object> eventsToProcess;
+
+                do
+                {
+                    //não existem eventos e foi chamado o shutDown
+                    if (subscriber.events.Count == 0 && toShutdown)
+                        return null;
+
+                    //foi chamado shutDown mas existem eventos a processar
+                    if (toShutdown && subscriber.events.Count != 0)
+                        return subscriber.RemoveSubscriberEvents();
+
+                    try
+                    {
+                        Monitor.Wait(subscribers);
+                        if (toShutdown)
+                        {
+                            return null;
+                        }
+                        return subscriber.RemoveSubscriberEvents();
+                    }
+                    catch (ThreadInterruptedException)
+                    {
+                        //thread interrompida mas existem eventos a processar
+                        if (subscriber.events.Count != 0)
+                        {
+                            eventsToProcess = subscriber.RemoveSubscriberEvents();
+                            //cancelar na posse do lock
+                            Thread.CurrentThread.Interrupt();
+                            break;
+                        }
+                        throw;
+                    }
+                } while (true);
+                return eventsToProcess;
             }
         }
     }

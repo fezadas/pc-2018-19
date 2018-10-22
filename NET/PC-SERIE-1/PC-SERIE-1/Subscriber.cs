@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace PC_SERIE_1
 {
@@ -15,23 +12,22 @@ namespace PC_SERIE_1
         public Subscriber(int maxPending)
         {
             events = new List<Object>();
-            this.condition = new object();
+            condition = new Object();
             this.maxPending = maxPending;
         }
-
-        public void Cancel()
-        {
-
-        }
-
-        public bool AddEvent(Object ev)
+        public void TryAddEvent(Object ev)
         {
             if (events.Count < maxPending)
             {
                 events.Add(ev);
-                return true;
             }
-            return false;
+        }
+
+        public List<Object> RemoveSubscriberEvents()
+        {
+            List<Object> ret = events;
+            events = new List<Object>();
+            return ret;
         }
     }
 }
