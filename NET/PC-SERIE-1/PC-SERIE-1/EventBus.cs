@@ -9,7 +9,7 @@ namespace PC_SERIE_1
     {
         private readonly Object monitor = new Object();
         private int maxPending;
-        private Boolean toShutdown;
+        private Boolean toShutdown, doneShutdown;
         private Object shutdownCondition;
         Dictionary<Type, List<Subscriber>> subscribers = new Dictionary<Type, List<Subscriber>>();
 
@@ -21,6 +21,7 @@ namespace PC_SERIE_1
         public EventBus(int maxPending) {
             this.maxPending = maxPending;
             toShutdown = false;
+            doneShutdown = false;
             shutdownCondition = new object();
         }
 
@@ -43,7 +44,7 @@ namespace PC_SERIE_1
             }
 
             List<Object> events;
-            while((events = GetEvents(sub)) != null) {
+            while((events = GetEvents(sub, typeof(T))) != null) {
                 foreach(Object ev in events)
                 {
                     try
@@ -65,7 +66,10 @@ namespace PC_SERIE_1
                 RemoveSubscriber(typeof(T), sub);
 
                 if (subscribers.Count == 0)
-                    Monitor.Pulse(shutdownCondition);
+                {
+                    doneShutdown = true;
+                    MonitorEx.Pulse(monitor, shutdownCondition);
+                }
             }
         }
         
@@ -77,11 +81,17 @@ namespace PC_SERIE_1
                     throw new InvalidOperationException();
 
                 List<Subscriber> subs;
-                if (subscribers.TryGetValue(typeof(E), out subs)) {
-                    foreach (Subscriber s in subs) {
+                if (subscribers.TryGetValue(typeof(E), out subs))
+                {
+                    foreach (Subscriber s in subs)
+                    {
                         s.TryAddEvent(message);
                     }
-                    Monitor.Pulse(subscribers);
+                    MonitorEx.Pulse(monitor, subs);
+                }
+                else
+                {
+                    throw new InvalidOperationException();
                 }
 
             }
@@ -95,7 +105,11 @@ namespace PC_SERIE_1
                 do {
                     try
                     {
-                        Monitor.Wait(shutdownCondition);
+                        foreach (var entry in subscribers)
+                        {
+                            MonitorEx.Pulse(monitor, entry.Value);
+                        }
+                        MonitorEx.Wait(monitor, shutdownCondition);
                     }
                     catch (ThreadInterruptedException)
                     {
@@ -106,7 +120,7 @@ namespace PC_SERIE_1
                         }
                         throw;
                     }
-                } while (true);
+                } while (!doneShutdown);
             }
         }
 
@@ -123,7 +137,7 @@ namespace PC_SERIE_1
             
         }
 
-        public List<Object> GetEvents(Subscriber subscriber)
+        public List<Object> GetEvents(Subscriber subscriber, Type type)
         {
             lock (monitor)
             {
@@ -140,7 +154,9 @@ namespace PC_SERIE_1
 
                     try
                     {
-                        Monitor.Wait(subscribers);
+                        List<Subscriber> list;
+                        subscribers.TryGetValue(type, out list);
+                        MonitorEx.Wait(monitor, list);
                         if (toShutdown)
                         {
                             return null;
