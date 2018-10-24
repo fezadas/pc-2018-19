@@ -5,7 +5,7 @@ using System.Threading;
 namespace PC_SERIE_1
 {
 
-    class EventBus
+    public class EventBus
     {
         private readonly Object monitor = new Object();
         private int maxPending;
@@ -13,13 +13,17 @@ namespace PC_SERIE_1
         private Object shutdownCondition;
         Dictionary<Type, List<Subscriber>> subscribers = new Dictionary<Type, List<Subscriber>>();
 
+      public static int Main(String []args)
+        {
+            return 1;
+        }
+
         public EventBus(int maxPending) {
             this.maxPending = maxPending;
             toShutdown = false;
             shutdownCondition = new object();
         }
 
-        //ACQUIRE
         public void SubscribeEvent<T>(Action<T> handler) where T : class
         {
             Subscriber sub;
@@ -123,9 +127,7 @@ namespace PC_SERIE_1
         {
             lock (monitor)
             {
-
                 List<Object> eventsToProcess;
-
                 do
                 {
                     //não existem eventos e foi chamado o shutDown

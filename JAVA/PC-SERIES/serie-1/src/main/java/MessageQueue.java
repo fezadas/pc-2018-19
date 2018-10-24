@@ -24,7 +24,7 @@ public class MessageQueue<T> {
             }
             else {
                 //operation = new OperationStatus(true);
-                Request request = requestsQueue.removeFirst();
+                Request request = requestsQueue.removeLast();
                 request.done = true;
                 request.message = sentMsg;
                 request.cond.signal();
@@ -46,7 +46,7 @@ public class MessageQueue<T> {
             //Quando não há requests previamente registados
             //e há mensagens na fila de espera, este pedido pode ser logo processado
             if (requestsQueue.size() == 0 && canAcquire())
-                return Optional.of(acquireSideEffect());
+                return Optional.of(acquireSideEffect()); //altera estado de operationstatus e retorna menssagem
 
             //Quando send mete uma mensagem na pendingMgs e ainda não há requests.
             Request request = new Request(false, monitor.newCondition());
@@ -143,34 +143,25 @@ public class MessageQueue<T> {
         public boolean await(int timeout) throws InterruptedException {
             try {
                 monitor.lock();
-                /*OperationStatus operation = null; //FIXME: FALAR COM ENGENHEIRO
-                for (int idx = 0 ; idx <= pendingMessages.size(); ++idx) {
-                    if((operation = pendingMessages.get(idx)) == this){
-                        pendingMessages.remove(idx);
-                        break;
-                    }
-                }*/
-                OperationStatus operation = this;
-                //OperationStatus operation = pendingMessages.getFirst(); !!! ERRO !!!
                 do {
                     TimeoutHolder th = new TimeoutHolder(timeout);
                     try {
                         if (th.isTimed()) {
                             if ((timeout = (int)th.value()) <= 0) {
-                                pendingMessages.remove(operation);
+                                pendingMessages.remove(this);
                                 return false;
                             }
-                            operation.cond.await(timeout, TimeUnit.MILLISECONDS);
+                            this.cond.await(timeout, TimeUnit.MILLISECONDS);
                         }
-                        operation.cond.await();
+                        this.cond.await();
                     }catch (InterruptedException ie) {
-                        if (operation.completed) {
+                        if (this.completed) {
                             Thread.currentThread().interrupt();
                         }
-                        pendingMessages.remove(operation);
+                        pendingMessages.remove(this);
                         throw ie;
                     }
-                } while(!operation.completed);
+                } while(!this.completed);
 
                 return true;
 

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace PC_SERIE_1
 {
-    class Subscriber
+    public class Subscriber
     {
         public List<Object> events;
         public Object condition;

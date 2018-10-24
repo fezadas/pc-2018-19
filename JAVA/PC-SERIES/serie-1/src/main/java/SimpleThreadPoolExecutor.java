@@ -2,7 +2,7 @@ import java.util.LinkedList;
 import java.util.concurrent.RejectedExecutionException;
 
 public class SimpleThreadPoolExecutor {
-
+/*
     private int maxPoolSize;
     private int keepAliveTime;
     private int totalWorkerThreads;
@@ -147,5 +147,5 @@ public class SimpleThreadPoolExecutor {
             this.done = done;
         }
     }
-
+*/
 }
