@@ -68,7 +68,7 @@ namespace PC_SERIE_1
                 if (subscribers.Count == 0)
                 {
                     doneShutdown = true;
-                    MonitorEx.Pulse(monitor, shutdownCondition);
+                    MonitorEx.PulseAll(monitor, shutdownCondition);
                 }
             }
         }
@@ -109,6 +109,7 @@ namespace PC_SERIE_1
                         {
                             MonitorEx.Pulse(monitor, entry.Value);
                         }
+                        if (doneShutdown) return; //prevent infinite wait due to lost signal
                         MonitorEx.Wait(monitor, shutdownCondition);
                     }
                     catch (ThreadInterruptedException)
@@ -157,11 +158,8 @@ namespace PC_SERIE_1
                         List<Subscriber> list;
                         subscribers.TryGetValue(type, out list);
                         MonitorEx.Wait(monitor, list);
-                        if (toShutdown)
-                        {
-                            return null;
-                        }
-                        return subscriber.RemoveSubscriberEvents();
+                        if (subscriber.events.Count != 0)
+                            return subscriber.RemoveSubscriberEvents();
                     }
                     catch (ThreadInterruptedException)
                     {

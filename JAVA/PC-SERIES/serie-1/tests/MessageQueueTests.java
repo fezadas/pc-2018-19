@@ -18,6 +18,11 @@ public class MessageQueueTests {
 
         Thread t1 = new Thread(() -> {
             sendStatus[0] = messageQueue.send(msg);
+            try {
+                awaitRes[0] = sendStatus[0].await(-1);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         });
 
         Thread t2 = new Thread(() -> {
@@ -28,19 +33,10 @@ public class MessageQueueTests {
             }
         });
 
-        Thread t3 = new Thread(() -> {
-            try {
-                awaitRes[0] = sendStatus[0].await(6000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        });
-
         t1.start();
         TimeUnit.SECONDS.sleep(1);
         assertEquals(false, sendStatus[0].isSent());
 
-        t3.start();
 
         t2.start();
         TimeUnit.SECONDS.sleep(1);

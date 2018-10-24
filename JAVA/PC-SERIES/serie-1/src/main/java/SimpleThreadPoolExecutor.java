@@ -1,51 +1,53 @@
 import java.util.LinkedList;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class SimpleThreadPoolExecutor {
-/*
+
+    private final Lock monitor = new ReentrantLock();
+
     private int maxPoolSize;
     private int keepAliveTime;
     private int totalWorkerThreads;
-    private boolean toShutDown;
+
+    private boolean toShutdown, doneshutdown;
+    private Condition shutdownCondition;
 
     private LinkedList<Request> pendingRequests = new LinkedList<>();
-    private LinkedList<WorkerThread> threadPool = new LinkedList<>();
+    private LinkedList<WorkerThread> availableThreads = new LinkedList<>();
 
     public SimpleThreadPoolExecutor(int maxPoolSize, int keepAliveTime) {
         this.maxPoolSize = maxPoolSize;
         this.keepAliveTime = keepAliveTime;
+        shutdownCondition = monitor.newCondition();
     }
 
-    private final Object monitor = new Object();
+    public boolean execute(Runnable command, int timeout) throws InterruptedException{
 
-    private class WorkerThread extends Thread {
+        monitor.lock();
+        try {
 
-        public void setCommand(Runnable command) {
-            this.command = command;
-        }
+            if(toShutdown)
+                throw new RejectedExecutionException();
 
-        Runnable command;
-        public WorkerThread(Runnable command){
-            this.command = command;
-        }
+            if(pendingRequests.size() == 0 && availableThreads.size() > 0){
+                WorkerThread thread = availableThreads.getFirst();
+                availableThreads.remove(thread);
+                thread.cmd = command;
+                thread.condition.signal();
+                return true;
+            }
 
-        @Override
-        public void run(){
-            command.run();
-        }
-
-    }
-
-    public boolean execute(Runnable command, int timeout)throws InterruptedException{
-        synchronized(monitor) {
-            if(pendingRequests.size() == 0 && toShutDown) throw new RejectedExecutionException();
-            if(pendingRequests.size() == 0 && canAcquire())
-                return acquireSideEffect(command);
             if(totalWorkerThreads < maxPoolSize) {
                 WorkerThread newThread = new WorkerThread(command);
                 ++totalWorkerThreads;
+                newThread.start();
                 return true;
             }
+
             Request request = new Request(command,false);
             pendingRequests.addLast(request);  // enqueue "request" at the end of the request queue
             TimeoutHolder th = new TimeoutHolder(timeout);
@@ -54,88 +56,81 @@ public class SimpleThreadPoolExecutor {
                     if (th.isTimed()) {
                         if ((timeout = (int)th.value()) <= 0) {
                             pendingRequests.remove(request);
-                            // After remove the request of the current thread from queue, *it is possible*
-                            // that the current synhcronization allows now to satisfy another queued
-                            // acquires.
-                            if (pendingRequests.size() > 0 && threadPool.size() > 0 )
-                                performPossibleAcquires();
-
                             return false;
                         }
                         monitor.wait(timeout);
                     } else
                         monitor.wait();
                 } catch (InterruptedException ie) {
-                    // the thread may be interrupted when the requested acquire operation
-                    // is already performed, in which case you can no longer give up
                     if (request.done) {
-                        // re-assert the interrupt and return normally, indicating to the
-                        // caller that the operation was successfully completed
                         Thread.currentThread().interrupt();
                         break;
                     }
-                    // remove the request from the queue and throw ThreadInterruptedException
-                    pendingRequests.remove(request);
-
-                    // After remove the request of the current thread from queue, *it is possible*
-                    // that the current synhcronization allows now to satisfy another queued
-                    // acquires.
-                    if (pendingRequests.size() > 0 && threadPool.size()>0)
-                        performPossibleAcquires();
-
                     throw ie;
                 }
             } while (!request.done);
-            // the request acquire operation completed successfully
+
             return true;
+        } finally {
+            monitor.unlock();
         }
     }
-
-    private void performPossibleAcquires() {
-        boolean notify = false;
-        while (pendingRequests.size() > 0) {
-            Request request = pendingRequests.peek();
-            if (!canAcquire())
-                break;
-            pendingRequests.removeFirst();
-            request.done = true;
-            notify = true;
-        }
-        if (notify) {
-            // even if we release only one thread, we do not know its position of the queue
-            // of the condition variable, so it is necessary to notify all blocked threads,
-            // to make sure that the thread(s) in question is notified.
-            monitor.notifyAll();
-        }
-    }
-
-
-
-    private boolean acquireSideEffect(Runnable command) {
-        WorkerThread thread = threadPool.getFirst();
-        threadPool.remove(thread);
-        thread.setCommand(command);
-        //thread.run();
-        return true;
-    }
-
-    private boolean canAcquire() {
-        return threadPool.size() > 0;
-    }
-
 
     public void shutDown(){
-        synchronized (monitor){
-            toShutDown = true;
+        monitor.lock();
+        try {
+            unlockedShutDown();
+        } finally {
+            monitor.unlock();
         }
     };
 
-    public boolean awaitTermination(int timeout)throws InterruptedException{
-        synchronized(monitor) {
-            updateStateDueToRelease(releaseArgs);
-            performPossibleAcquires();
+    private void unlockedShutDown(){
+        toShutdown = true;
+        for (WorkerThread w : availableThreads) {
+            w.condition.signalAll();
         }
     }
+
+    public boolean awaitTermination(int timeout)throws InterruptedException{
+        monitor.lock();
+        try {
+            if (doneshutdown) return true;
+            if(!toShutdown) unlockedShutDown();
+
+            do {
+                try
+                {
+                    TimeoutHolder th = new TimeoutHolder(timeout);
+                    if (th.isTimed()) {
+                        if ((timeout = (int)th.value()) <= 0) {
+                            // the timeout limit has expired - here we are sure that the
+                            // acquire resquest is still pending. So, we remove the request
+                            // from the queue and return failure
+                            return false;
+                        }
+                        shutdownCondition.await(timeout, TimeUnit.MILLISECONDS);
+
+                    } else
+                        shutdownCondition.await();
+                }
+                catch (InterruptedException e)
+                {
+                    if (totalWorkerThreads == 0)
+                    {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    throw e;
+                }
+            } while (!doneshutdown);
+        } finally {
+            monitor.unlock();
+        }
+        return true;
+    }
+
+    //--------------------------------------------
 
     private class Request{
 
@@ -147,5 +142,92 @@ public class SimpleThreadPoolExecutor {
             this.done = done;
         }
     }
-*/
+
+    private class WorkerThread extends Thread {
+        public Runnable cmd;
+        public Condition condition;
+
+        public WorkerThread(Runnable cmd){
+            this.cmd = cmd;
+            condition = monitor.newCondition();
+        }
+        @Override
+        public void run(){
+            do {
+                try {
+                    cmd.run();
+                } catch (Exception ex) {
+                    lockedTerminateThread();
+                }
+            } while(getWork(this));
+        }
+    }
+
+
+
+    private boolean getWork(WorkerThread workerThread){
+        monitor.lock();
+        try {
+            if(pendingRequests.size() > 0){
+                workerThread.cmd = pendingRequests.removeFirst().command;
+                return true;
+            }
+            do
+            {
+                if (pendingRequests.size() == 0 && toShutdown) {
+                    unlockedTerminateThread();
+                    return false;
+                }
+
+                if (toShutdown) { //but still has work to finish
+                    workerThread.cmd = pendingRequests.removeFirst().command;
+                    return true;
+                }
+
+                availableThreads.add(workerThread);
+
+                TimeoutHolder th = new TimeoutHolder(keepAliveTime);
+                if (th.isTimed()) {
+                    if ((keepAliveTime = (int)th.value()) <= 0) {
+                        // the timeout limit has expired - here we are sure that the
+                        // acquire resquest is still pending. So, we remove the request
+                        // from the queue and return failure
+                        availableThreads.remove(workerThread);
+                        --totalWorkerThreads;
+                        return false;
+                    }
+                    workerThread.condition.await(keepAliveTime, TimeUnit.MILLISECONDS);
+
+                } else
+                    workerThread.condition.await();
+
+                if(pendingRequests.size() > 0){
+                    workerThread.cmd = pendingRequests.removeFirst().command;
+                    return true;
+                }
+            } while (true);
+
+        } catch (InterruptedException e) {
+            //NOTHING (WE DONT HANDLE WITH THIS)
+        } finally {
+            monitor.unlock();
+        }
+
+        return false;
+    }
+
+    private void lockedTerminateThread(){
+        monitor.lock();
+        try {
+            unlockedTerminateThread();
+        } finally {
+          monitor.unlock();
+        }
+    }
+
+    private void unlockedTerminateThread(){
+        if(--totalWorkerThreads == 0)
+            doneshutdown = true;
+        shutdownCondition.signal();
+    }
 }
