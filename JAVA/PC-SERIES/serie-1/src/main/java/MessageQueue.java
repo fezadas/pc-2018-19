@@ -143,8 +143,8 @@ public class MessageQueue<T> {
         public boolean await(int timeout) throws InterruptedException {
             try {
                 monitor.lock();
+                TimeoutHolder th = new TimeoutHolder(timeout);
                 do {
-                    TimeoutHolder th = new TimeoutHolder(timeout);
                     try {
                         if (th.isTimed()) {
                             if ((timeout = (int)th.value()) <= 0) {

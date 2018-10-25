@@ -11,13 +11,13 @@ public class SimpleThreadPoolExecutor {
 
     private int maxPoolSize;
     private int keepAliveTime;
-    private int totalWorkerThreads;
+    public int totalWorkerThreads;
 
     private boolean toShutdown, doneshutdown;
     private Condition shutdownCondition;
 
-    private LinkedList<Request> pendingRequests = new LinkedList<>();
-    private LinkedList<WorkerThread> availableThreads = new LinkedList<>();
+    public LinkedList<Request> pendingRequests = new LinkedList<>();
+    public LinkedList<WorkerThread> availableThreads = new LinkedList<>();
 
     public SimpleThreadPoolExecutor(int maxPoolSize, int keepAliveTime) {
         this.maxPoolSize = maxPoolSize;
@@ -48,7 +48,7 @@ public class SimpleThreadPoolExecutor {
                 return true;
             }
 
-            Request request = new Request(command,false);
+            Request request = new Request(command);
             pendingRequests.addLast(request);  // enqueue "request" at the end of the request queue
             TimeoutHolder th = new TimeoutHolder(timeout);
             do {
@@ -58,9 +58,9 @@ public class SimpleThreadPoolExecutor {
                             pendingRequests.remove(request);
                             return false;
                         }
-                        monitor.wait(timeout);
+                        request.condition.await(timeout, TimeUnit.MILLISECONDS);
                     } else
-                        monitor.wait();
+                        request.condition.await();
                 } catch (InterruptedException ie) {
                     if (request.done) {
                         Thread.currentThread().interrupt();
@@ -98,15 +98,14 @@ public class SimpleThreadPoolExecutor {
             if (doneshutdown) return true;
             if(!toShutdown) unlockedShutDown();
 
+            TimeoutHolder th = new TimeoutHolder(timeout);
             do {
                 try
                 {
-                    TimeoutHolder th = new TimeoutHolder(timeout);
                     if (th.isTimed()) {
                         if ((timeout = (int)th.value()) <= 0) {
-                            // the timeout limit has expired - here we are sure that the
-                            // acquire resquest is still pending. So, we remove the request
-                            // from the queue and return failure
+                            totalWorkerThreads = 0;
+                            availableThreads.removeAll(availableThreads);
                             return false;
                         }
                         shutdownCondition.await(timeout, TimeUnit.MILLISECONDS);
@@ -124,6 +123,7 @@ public class SimpleThreadPoolExecutor {
                     throw e;
                 }
             } while (!doneshutdown);
+
         } finally {
             monitor.unlock();
         }
@@ -135,11 +135,13 @@ public class SimpleThreadPoolExecutor {
     private class Request{
 
         Runnable command;
+        Condition condition;
         boolean done;
 
-        public Request(Runnable command, boolean done) {
+        public Request(Runnable command) {
             this.command = command;
-            this.done = done;
+            done = false;
+            condition = monitor.newCondition();
         }
     }
 
@@ -163,15 +165,17 @@ public class SimpleThreadPoolExecutor {
         }
     }
 
-
-
     private boolean getWork(WorkerThread workerThread){
         monitor.lock();
         try {
             if(pendingRequests.size() > 0){
-                workerThread.cmd = pendingRequests.removeFirst().command;
+                Request request = pendingRequests.removeFirst();
+                workerThread.cmd = request.command;
+                request.done = true;
+                request.condition.signal();
                 return true;
             }
+            TimeoutHolder th = new TimeoutHolder(keepAliveTime);
             do
             {
                 if (pendingRequests.size() == 0 && toShutdown) {
@@ -180,26 +184,26 @@ public class SimpleThreadPoolExecutor {
                 }
 
                 if (toShutdown) { //but still has work to finish
-                    workerThread.cmd = pendingRequests.removeFirst().command;
+                    Request request = pendingRequests.removeFirst();
+                    workerThread.cmd = request.command;
+                    request.done = true;
+                    request.condition.signal();
                     return true;
                 }
 
-                availableThreads.add(workerThread);
-
-                TimeoutHolder th = new TimeoutHolder(keepAliveTime);
                 if (th.isTimed()) {
                     if ((keepAliveTime = (int)th.value()) <= 0) {
-                        // the timeout limit has expired - here we are sure that the
-                        // acquire resquest is still pending. So, we remove the request
-                        // from the queue and return failure
                         availableThreads.remove(workerThread);
                         --totalWorkerThreads;
                         return false;
                     }
+                    availableThreads.add(workerThread);
                     workerThread.condition.await(keepAliveTime, TimeUnit.MILLISECONDS);
 
-                } else
+                } else {
+                    availableThreads.add(workerThread);
                     workerThread.condition.await();
+                }
 
                 if(pendingRequests.size() > 0){
                     workerThread.cmd = pendingRequests.removeFirst().command;
@@ -208,7 +212,7 @@ public class SimpleThreadPoolExecutor {
             } while (true);
 
         } catch (InterruptedException e) {
-            //NOTHING (WE DONT HANDLE WITH THIS)
+
         } finally {
             monitor.unlock();
         }

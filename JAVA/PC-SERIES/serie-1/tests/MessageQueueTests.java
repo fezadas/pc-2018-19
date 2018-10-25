@@ -29,7 +29,7 @@ public class MessageQueueTests {
             try {
                 receivedMsg[0] = messageQueue.receive(2000).get();
             } catch (InterruptedException e) {
-                //TODO
+                e.printStackTrace();
             }
         });
 

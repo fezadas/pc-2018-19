@@ -116,9 +116,4 @@ public class KeyedExchangerTests {
         assertEquals("data4", res[2]);
         assertEquals("data3", res[3]);
     }
-
-    //FIXME: possible to test?
-    public void test_third_thread_in_the_middle_exchange() throws InterruptedException {
-
-    }
 }
