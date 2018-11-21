@@ -40,15 +40,22 @@ public class LinkedQueue<E> {
         }while (true);
     }
     public E remove(){
-        Node<E> toRemove,newFirst,dummy;
+        Node<E> observedHead,observedTail,dummyNext;
 
         do{
-            dummy = head.get();
-            toRemove = dummy.next.get();
-            newFirst = toRemove.next.get();
-            if(toRemove == dummy.next.get()) {
-                if (dummy.next.compareAndSet(toRemove, newFirst))
-                    return toRemove.item;
+            observedHead = head.get();
+            observedTail = tail.get();
+            dummyNext = observedHead.next.get();
+
+            if(observedHead == head.get()){
+                if(observedHead == observedTail){
+                    if(observedHead.next.get() == null) return null;
+                    //tail.compareAndSet(observedTail,dummyNext);
+                }else {
+                    E item = dummyNext.item;
+                    head.compareAndSet(observedHead,dummyNext);
+                    return item;
+                }
             }
         }while (true);
     }
