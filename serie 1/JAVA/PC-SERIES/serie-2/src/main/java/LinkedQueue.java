@@ -40,21 +40,21 @@ public class LinkedQueue<E> {
         }while (true);
     }
     public E tryRemove(){
-        Node<E> observedHead,observedTail,dummyNext;
+        Node<E> observedHead,observedTail,observedHeadNext;
 
         do{
             observedHead = head.get();
             observedTail = tail.get();
-            dummyNext = observedHead.next.get();
+            observedHeadNext = observedHead.next.get();
 
             if(observedHead == head.get()){
                 if(observedHead == observedTail){
-                    if(observedHead.next.get() == null) return null;
-                    tail.compareAndSet(observedTail,dummyNext); //duvida?
+                    if(observedHeadNext == null) return null;
+                    tail.compareAndSet(observedTail,observedHeadNext);
                 }else {
-                    E item = dummyNext.item;
-                    head.compareAndSet(observedHead,dummyNext);
-                    return item;
+                    E item = observedHeadNext.item;
+                    if(head.compareAndSet(observedHead,observedHeadNext))
+                        return item;
                 }
             }
         }while (true);

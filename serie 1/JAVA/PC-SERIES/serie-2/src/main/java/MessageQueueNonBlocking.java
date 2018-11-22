@@ -9,106 +9,95 @@ import java.util.concurrent.locks.ReentrantLock;
 public class MessageQueueNonBlocking<T> {
 
     private final Lock monitor = new ReentrantLock();
+    private final Condition requestCondition = monitor.newCondition();
 
     private final LinkedQueue<OperationStatus> pendingMessages = new LinkedQueue<>();
-    private final LinkedQueue<Request> requestsQueue = new LinkedQueue<Request>();
+    private volatile int waiters;
 
-    public SendStatus sendOptimized(T sentMsg) {
+    public Optional<T> receive(long timeout) throws InterruptedException {
 
-        Request request;
-        if ((request = requestsQueue.tryRemove()) == null) {
-            OperationStatus operation = new OperationStatus(false, sentMsg, monitor.newCondition());
-            pendingMessages.put(operation);
-            return operation;
-        } else {
-            try {
-                monitor.lock();
-                request.done = true;
-                request.message = sentMsg;
-                request.cond.signal();
-                return new SendStatus() {
-                    @Override
-                    public boolean isSent() {
-                        return true;
-                    }
-
-                    @Override
-                    public boolean await(int timeout) throws InterruptedException {
-                        return false;
-                    }
-                };
-            } finally {
-                monitor.unlock();
-            }
-        }
-    }
-
-    public Optional<T> receiveOptimized(int timeout) throws InterruptedException {
         OperationStatus operation;
 
         //Quando não há requests previamente registados
         //e há mensagens na fila de espera, este pedido pode ser logo processado
 
-        if ((operation = pendingMessages.tryRemove()) != null) { //gets the message
-            operation.completed = true; //the message was sent
-            operation.cond.signal();
-            return Optional.of(operation.message);
-        }
-
-        Request request = new Request(false, monitor.newCondition());
-        requestsQueue.put(request);
-
-        try {
-            monitor.lock();
-            TimeoutHolder th = new TimeoutHolder(timeout);
-            do {
-                try {
-                    if (th.isTimed()) {
-                        if ((timeout = (int) th.value()) <= 0) {
-                            requestsQueue.tryRemove();
-                            return Optional.empty();
+        if ((operation = pendingMessages.tryRemove()) != null) {
+            if (!operation.completed) {
+                operation.completed = true;
+                if (operation.waiters != 0) { //é preciso adquirir o lock porque existem threads em espera
+                    monitor.lock();
+                    try {
+                        if (operation.waiters > 0) { //existe alguem que precise de ser desbloqueado, neste caso mensagens a espera de receivers
+                            operation.cond.signal();
+                            return Optional.of(operation.message);
                         }
-                        request.cond.await(timeout, TimeUnit.MILLISECONDS);
-                    } else
-                        request.cond.await();
-                } catch (InterruptedException ie) {
-                    if (request.done) {
-                        Thread.currentThread().interrupt();
-                        break;
+                    } finally {
+                        monitor.unlock();
                     }
-                    requestsQueue.tryRemove();
-                    throw ie;
                 }
-            } while (!request.done);
-            return Optional.of(request.message);
+            }
+        }
+        if (timeout == 0)
+            return Optional.empty();
 
+        // if a time out was specified, get a time reference
+        boolean timed = timeout > 0;
+        long nanosTimeout = timed ? TimeUnit.NANOSECONDS.toNanos(timeout) : 0L;
+
+        monitor.lock();
+        try {
+            // the current thread declares itself as a waiter..
+            waiters++;
+            try {
+                do {
+                    if ((operation = pendingMessages.tryRemove()) != null) { //se existirem mensagens para serem recebidas
+                        operation.completed = true; //the message was sent
+                        operation.cond.signalAll(); //estando já na posse do lock, podemos sinalizar logo
+                        return Optional.of(operation.message);
+                    }
+                    // check if the specified timeout expired
+                    if (timed && nanosTimeout <= 0)
+                        return Optional.empty();
+                    if (timed)
+                        nanosTimeout = requestCondition.awaitNanos(nanosTimeout);
+                    else
+                        requestCondition.await();
+
+                } while (true);
+            } finally {
+                // the current thread is no longer a waiter
+                waiters--;
+            }
         } finally {
             monitor.unlock();
         }
     }
 
-    //-------------------------------
-
-    private class Request {
-
-        public boolean done;
-        public T message;
-        public Condition cond;
-
-        public Request(boolean done, Condition cond) {
-            this.done = done;
-            this.message = null;
-            this.cond = cond;
+    public SendStatus send(T sentMsg) {
+        OperationStatus operationStatus = new OperationStatus(false, sentMsg, monitor.newCondition());
+        pendingMessages.put(operationStatus);
+        if(waiters > 0) {
+            monitor.lock();
+            try {
+                if(waiters > 0){
+                    requestCondition.signal(); // only one thread can proceed execution
+                    return operationStatus;
+                }
+            } finally {
+                monitor.unlock();
+            }
         }
+        return operationStatus;
     }
 
     //-------------------------------
 
     private class OperationStatus implements SendStatus {
 
-        private boolean completed;
-        public T message;
-        public Condition cond;
+        private volatile boolean completed;
+        private volatile int waiters;
+        private T message;
+        private Condition cond;
 
         public OperationStatus(boolean completed, T message, Condition cond) {
             this.completed = completed;
@@ -128,30 +117,35 @@ public class MessageQueueNonBlocking<T> {
 
         @Override
         public boolean await(int timeout) throws InterruptedException {
+            //verificar se a mensagem já foi recebida
+            if (this.completed) return true;
+            // the event is not signalled; if a null time out was specified, return failure.
+            if (timeout == 0)
+                return false;
+
+            // process timeout
+            boolean timed = timeout > 0;
+            long nanosTimeout = timed ? TimeUnit.NANOSECONDS.toNanos(timeout) : 0L;
+
+            monitor.lock();
             try {
-                monitor.lock();
-                TimeoutHolder th = new TimeoutHolder(timeout);
-                do {
-                    try {
-                        if (th.isTimed()) {
-                            if ((timeout = (int) th.value()) <= 0) {
-                                pendingMessages.tryRemove(this);
+                ++this.waiters; //declarar propria thread como uma que espera
+                try{
+                    do {
+                        if (this.completed) //verificar se é mesmo preciso bloquear
+                            return true;
+                        // check for timeout
+                        if (timed) {
+                            if (nanosTimeout <= 0)
+                                // the specified time out elapsed, so return failure
                                 return false;
-                            }
-                            this.cond.await(timeout, TimeUnit.MILLISECONDS);
-                        }
-                        this.cond.await();
-                    } catch (InterruptedException ie) {
-                        if (this.completed) {
-                            Thread.currentThread().interrupt();
-                        }
-                        pendingMessages.tryRemove(this);
-                        throw ie;
-                    }
-                } while (!this.completed);
-
-                return true;
-
+                            nanosTimeout = this.cond.awaitNanos(nanosTimeout);
+                        } else
+                            this.cond.await();
+                    } while (true);
+                }finally {
+                    this.waiters--;
+                }
             } finally {
                 monitor.unlock();
             }
