@@ -1,6 +1,5 @@
 package main.java;
 
-import java.util.LinkedList;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
@@ -11,54 +10,62 @@ public class MessageQueueNonBlocking<T> {
 
     private final Lock monitor = new ReentrantLock();
 
-    private final LinkedList<OperationStatus> pendingMessages = new LinkedList<OperationStatus>();
-    private final LinkedList<Request> requestsQueue = new LinkedList<Request>();
+    private final LinkedQueue<OperationStatus> pendingMessages = new LinkedQueue<>();
+    private final LinkedQueue<Request> requestsQueue = new LinkedQueue<Request>();
 
-    public SendStatus send(T sentMsg){
-        try {
-            monitor.lock();
+    public SendStatus sendOptimized(T sentMsg) {
 
-            //quando ainda não há requests feitos pelo receiver
-            if(requestsQueue.size() == 0){
-                OperationStatus operation = new OperationStatus(false, sentMsg, monitor.newCondition());
-                pendingMessages.add(operation);
-                return operation;
-            }
-            else {
-                //operation = new OperationStatus(true);
-                Request request = requestsQueue.removeLast();
+        Request request;
+        if ((request = requestsQueue.tryRemove()) == null) {
+            OperationStatus operation = new OperationStatus(false, sentMsg, monitor.newCondition());
+            pendingMessages.put(operation);
+            return operation;
+        } else {
+            try {
+                monitor.lock();
                 request.done = true;
                 request.message = sentMsg;
                 request.cond.signal();
                 return new SendStatus() {
-                    @Override public boolean isSent() { return true; }
-                    @Override public boolean await(int timeout) throws InterruptedException { return false; }
+                    @Override
+                    public boolean isSent() {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean await(int timeout) throws InterruptedException {
+                        return false;
+                    }
                 };
+            } finally {
+                monitor.unlock();
             }
-        }finally {
-            monitor.unlock();
         }
     }
 
-    public Optional<T> receive(int timeout) throws InterruptedException {
-        monitor.lock();
-         try {
+    public Optional<T> receiveOptimized(int timeout) throws InterruptedException {
+        OperationStatus operation;
 
-            //Quando não há requests previamente registados
-            //e há mensagens na fila de espera, este pedido pode ser logo processado
-            if (requestsQueue.size() == 0 && canAcquire())
-                return Optional.of(acquireSideEffect()); //altera estado de operationstatus e retorna menssagem
+        //Quando não há requests previamente registados
+        //e há mensagens na fila de espera, este pedido pode ser logo processado
 
-            //Quando send mete uma mensagem na pendingMgs e ainda não há requests.
-            Request request = new Request(false, monitor.newCondition());
-            requestsQueue.addLast(request);
+        if ((operation = pendingMessages.tryRemove()) != null) { //gets the message
+            operation.completed = true; //the message was sent
+            operation.cond.signal();
+            return Optional.of(operation.message);
+        }
 
+        Request request = new Request(false, monitor.newCondition());
+        requestsQueue.put(request);
+
+        try {
+            monitor.lock();
             TimeoutHolder th = new TimeoutHolder(timeout);
             do {
                 try {
                     if (th.isTimed()) {
-                        if ((timeout = (int)th.value()) <= 0) {
-                            requestsQueue.remove(request);
+                        if ((timeout = (int) th.value()) <= 0) {
+                            requestsQueue.tryRemove();
                             return Optional.empty();
                         }
                         request.cond.await(timeout, TimeUnit.MILLISECONDS);
@@ -69,37 +76,26 @@ public class MessageQueueNonBlocking<T> {
                         Thread.currentThread().interrupt();
                         break;
                     }
-                    requestsQueue.remove(request);
+                    requestsQueue.tryRemove();
                     throw ie;
                 }
             } while (!request.done);
             return Optional.of(request.message);
 
-         } finally {
-             monitor.unlock();
-         }
-    }
-
-    private boolean canAcquire() {
-        return pendingMessages.size() != 0;
-    }
-
-    private T acquireSideEffect() {
-        OperationStatus operation = pendingMessages.removeFirst(); //gets the message
-        operation.completed = true; //the message was sent
-        operation.cond.signal();
-        return operation.message;
+        } finally {
+            monitor.unlock();
+        }
     }
 
     //-------------------------------
 
-    private class Request{
+    private class Request {
 
         public boolean done;
         public T message;
         public Condition cond;
 
-        public Request(boolean done, Condition cond){
+        public Request(boolean done, Condition cond) {
             this.done = done;
             this.message = null;
             this.cond = cond;
@@ -114,7 +110,7 @@ public class MessageQueueNonBlocking<T> {
         public T message;
         public Condition cond;
 
-        public OperationStatus(boolean completed , T message, Condition cond){
+        public OperationStatus(boolean completed, T message, Condition cond) {
             this.completed = completed;
             this.message = message;
             this.cond = cond;
@@ -130,7 +126,6 @@ public class MessageQueueNonBlocking<T> {
             }
         }
 
-
         @Override
         public boolean await(int timeout) throws InterruptedException {
             try {
@@ -139,21 +134,21 @@ public class MessageQueueNonBlocking<T> {
                 do {
                     try {
                         if (th.isTimed()) {
-                            if ((timeout = (int)th.value()) <= 0) {
-                                pendingMessages.remove(this);
+                            if ((timeout = (int) th.value()) <= 0) {
+                                pendingMessages.tryRemove(this);
                                 return false;
                             }
                             this.cond.await(timeout, TimeUnit.MILLISECONDS);
                         }
                         this.cond.await();
-                    }catch (InterruptedException ie) {
+                    } catch (InterruptedException ie) {
                         if (this.completed) {
                             Thread.currentThread().interrupt();
                         }
-                        pendingMessages.remove(this);
+                        pendingMessages.tryRemove(this);
                         throw ie;
                     }
-                } while(!this.completed);
+                } while (!this.completed);
 
                 return true;
 

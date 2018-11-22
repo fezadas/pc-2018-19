@@ -39,7 +39,7 @@ public class LinkedQueue<E> {
             }
         }while (true);
     }
-    public E remove(){
+    public E tryRemove(){
         Node<E> observedHead,observedTail,dummyNext;
 
         do{
@@ -50,7 +50,7 @@ public class LinkedQueue<E> {
             if(observedHead == head.get()){
                 if(observedHead == observedTail){
                     if(observedHead.next.get() == null) return null;
-                    //tail.compareAndSet(observedTail,dummyNext);
+                    tail.compareAndSet(observedTail,dummyNext); //duvida?
                 }else {
                     E item = dummyNext.item;
                     head.compareAndSet(observedHead,dummyNext);
@@ -59,4 +59,5 @@ public class LinkedQueue<E> {
             }
         }while (true);
     }
+
 }
