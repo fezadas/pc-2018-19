@@ -49,7 +49,7 @@ public class KeyedExchanger<T> {
                 } catch (InterruptedException ie) {
                     // the thread may be interrupted when the requested acquire operation
                     // is already performed, in which case you can no longer give up
-                    if (data.get(ky) == null) {
+                    if (request.done) {
                         // re-assert the interrupt and return normally, indicating to the
                         // caller that the operation was successfully completed
                         Thread.currentThread().interrupt();
