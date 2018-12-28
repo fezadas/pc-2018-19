@@ -55,6 +55,7 @@ public class KeyedExchanger<T> {
                         Thread.currentThread().interrupt();
                         break;
                     }
+					data.remove(ky);
                     throw ie;
                 }
             } while (!request.done);
