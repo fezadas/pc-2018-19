@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using TCPServer.service;
+using TCPServer;
 
 namespace JsonEchoServer
 {
@@ -42,7 +43,12 @@ namespace JsonEchoServer
         private const int port = 8081;
         private static int counter;
 
+        private static JObject nonExistentQueuePayload,successPayload,
+            timeoutPayload,formatErrorPayload, toShutDownPayload;
+
         private static ConcurrentDictionary<string, MessageQueue> messageCollections;
+        private volatile static int pendingOperations;
+        private volatile static bool toShutDown;
 
         static async Task Main(string[] args)
         {   
@@ -51,7 +57,14 @@ namespace JsonEchoServer
             Console.WriteLine($"Listening on {port}");
 
             messageCollections = new ConcurrentDictionary<string, MessageQueue>();
-            Services services = 
+        
+            nonExistentQueuePayload = new JObject(new JProperty("body","Fila não existente"));
+            successPayload = new JObject(new JProperty("body","Sucesso"));
+            formatErrorPayload = new JObject(new JProperty("body","Formato inválido"));
+            timeoutPayload = new JObject(new JProperty("body","Timeout"));
+            toShutDownPayload = new JObject(new JProperty("body", "Shutdown"));
+
+            //Services services = 
 
             while (true)
             {
@@ -96,22 +109,17 @@ namespace JsonEchoServer
                         // to ensure that proper deserialization is possible
                         Request request = json.ToObject<Request>();
 
+                        Response response;
+
                         switch (request.Method)
                         {
-                            case "CREATE": Create(request.Path); break;
-                            case "SEND": Send(request.Path); break;
-                            case "RECEIVE": Receive(request.Path); break;
-                            case "SHUTDOWN": ShutDown(); break;
-                            default: break;
-
+                            case "CREATE": response = Create(request.Path); break;
+                            case "SEND": response = await Send(request); break;
+                            case "RECEIVE": response = await Receive(request); break;
+                            case "SHUTDOWN": response = await ShutDown(); break;
+                            default: response = new Response { Status = 400 }; break;
                         }
 
-                   
-                        var response = new Response
-                        {
-                            Status = 200,
-                            Payload = json,
-                        };
                         serializer.Serialize(writer, response);
                         await writer.FlushAsync();
                     }
@@ -135,20 +143,76 @@ namespace JsonEchoServer
                 }
             }
         }
-        public static void Create(string path)
+        public static Response Create(string path)
         {
+
+            if(toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+
             messageCollections.TryGetValue(path, out MessageQueue mQueue);
             if(mQueue == null)
             {
-                messageCollections.TryAdd(path,)
+                messageCollections.TryAdd(path, new MessageQueue(10));
             }
+
+            return new Response { Status = 200 , Payload= successPayload };
         }
 
-        public static void Send(string path) { }
+        public async static Task<Response> Send(Request request) {
 
-        public static void Receive(string path) { }
+            if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
 
-        public static void ShutDown() { }
+            var payload = request.Payload;
+
+            messageCollections.TryGetValue(request.Path, out MessageQueue mQueue);
+            if (mQueue == null)
+            {
+                return new Response { Status = 404 , Payload = nonExistentQueuePayload };
+            }
+
+            Interlocked.Increment(ref pendingOperations);
+
+            await mQueue.PutAsync(new Message(payload));
+
+            return new Response { Status = 200 , Payload = successPayload };
+        }
+
+        public async static Task<Response> Receive(Request request) {
+
+            if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+
+            String tHeader;
+            int timeout;
+            request.Headers.TryGetValue("timeout", out tHeader);
+
+            if (tHeader == null) { timeout = Timeout.Infinite; }
+            else int.TryParse(tHeader, out timeout);
+
+            messageCollections.TryGetValue(request.Path, out MessageQueue mQueue);
+            if (mQueue == null)
+            {
+                return new Response { Status = 404 , Payload = nonExistentQueuePayload };
+            }
+
+            CancellationTokenSource cts = new CancellationTokenSource();
+            CancellationToken ct = cts.Token;
+
+            Message message = await mQueue.TakeAsync(timeout, ct);
+
+            if(message == null)
+            {
+                return new Response { Status = 204 , Payload = timeoutPayload };
+            }
+
+            return new Response { Status = 200 , Payload = message.Payload };
+
+        }
+
+        public async static Task<Response> ShutDown() {
+
+            if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+
+            toShutDown = true;
+        }
 
     }
 
