@@ -8,13 +8,11 @@ using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using TCPServer.service;
 using TCPServer;
+using TCPServer.server;
 
 namespace JsonEchoServer
 {
-    // CAUTION: does not support proper shutdown
-    
     // To represent a JSON request
     public class Request
     {
@@ -36,19 +34,29 @@ namespace JsonEchoServer
         public Dictionary<String, String> Headers { get; set; }
         public JObject Payload { get; set; }
     }
-    
-    
+      
     public class Program
     {
         private const int port = 8081;
         private static int counter;
 
-        private static JObject nonExistentQueuePayload,successPayload,
-            timeoutPayload,formatErrorPayload, toShutDownPayload;
+        private static JObject
+            nonExistentQueuePayload = createJObject("body", "Queue does not exist"),
+            successPayload = createJObject("body", "Success"),
+            timeoutPayload = createJObject("body", "Timeout"),
+            formatErrorPayload = createJObject("body", "Invalid format"),
+            toShutDownPayload = createJObject("body", "Shutdown"),
+            serverError = createJObject("body", "Error in server");
+
+        private static JObject createJObject(string property, string value)
+        {
+            return new JObject(new JProperty(property, value));
+        }
 
         private static ConcurrentDictionary<string, MessageQueue> messageCollections;
-        private volatile static int pendingOperations;
         private volatile static bool toShutDown;
+        private volatile static int inServiceRequests = 0;
+        private static object _lock = new object();
 
         static async Task Main(string[] args)
         {   
@@ -57,15 +65,7 @@ namespace JsonEchoServer
             Console.WriteLine($"Listening on {port}");
 
             messageCollections = new ConcurrentDictionary<string, MessageQueue>();
-        
-            nonExistentQueuePayload = new JObject(new JProperty("body","Fila não existente"));
-            successPayload = new JObject(new JProperty("body","Sucesso"));
-            formatErrorPayload = new JObject(new JProperty("body","Formato inválido"));
-            timeoutPayload = new JObject(new JProperty("body","Timeout"));
-            toShutDownPayload = new JObject(new JProperty("body", "Shutdown"));
-
-            //Services services = 
-
+      
             while (true)
             {
                 var client = await listener.AcceptTcpClientAsync();
@@ -116,7 +116,7 @@ namespace JsonEchoServer
                             case "CREATE": response = Create(request.Path); break;
                             case "SEND": response = await Send(request); break;
                             case "RECEIVE": response = await Receive(request); break;
-                            case "SHUTDOWN": response = await ShutDown(); break;
+                            case "SHUTDOWN": response = await ShutDown(request); break;
                             default: response = new Response { Status = 400 }; break;
                         }
 
@@ -145,75 +145,120 @@ namespace JsonEchoServer
         }
         public static Response Create(string path)
         {
-
-            if(toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+            if(toShutDown)
+                return new Response { Status = 503, Payload = toShutDownPayload };
 
             messageCollections.TryGetValue(path, out MessageQueue mQueue);
             if(mQueue == null)
             {
                 messageCollections.TryAdd(path, new MessageQueue(10));
             }
-
             return new Response { Status = 200 , Payload= successPayload };
         }
 
         public async static Task<Response> Send(Request request) {
-
-            if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
-
-            var payload = request.Payload;
-
-            messageCollections.TryGetValue(request.Path, out MessageQueue mQueue);
-            if (mQueue == null)
+            try
             {
-                return new Response { Status = 404 , Payload = nonExistentQueuePayload };
+                if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+                Interlocked.Increment(ref inServiceRequests);
+
+                var payload = request.Payload;
+                messageCollections.TryGetValue(request.Path, out MessageQueue mQueue);
+                if (mQueue == null)
+                {
+                    return new Response { Status = 404, Payload = nonExistentQueuePayload };
+                }
+
+                await mQueue.PutAsync(new Message(payload));
+                return new Response { Status = 200, Payload = successPayload };
             }
-
-            Interlocked.Increment(ref pendingOperations);
-
-            await mQueue.PutAsync(new Message(payload));
-
-            return new Response { Status = 200 , Payload = successPayload };
+            finally
+            {
+                lock (_lock)
+                {
+                    Interlocked.Decrement(ref inServiceRequests);
+                    if (inServiceRequests == 0 && toShutDown)
+                        Monitor.Pulse(_lock);
+                }
+            }
         }
 
         public async static Task<Response> Receive(Request request) {
+            try
+            {
+                if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+                Interlocked.Increment(ref inServiceRequests);
+
+                String tHeader;
+                int timeout;
+                request.Headers.TryGetValue("timeout", out tHeader);
+                if (tHeader == null) { timeout = Timeout.Infinite; }
+                else int.TryParse(tHeader, out timeout);
+
+                messageCollections.TryGetValue(request.Path, out MessageQueue mQueue);
+                if (mQueue == null)
+                {
+                    return new Response { Status = 404, Payload = nonExistentQueuePayload };
+                }
+
+                CancellationTokenSource cts = new CancellationTokenSource();
+                CancellationToken ct = cts.Token;
+                Message message = await mQueue.TakeAsync(timeout, ct);
+                if (message == null)
+                {
+                    return new Response { Status = 204, Payload = timeoutPayload };
+                }
+
+                return new Response { Status = 200, Payload = message.Payload };
+
+            } finally
+            {
+                lock (_lock)
+                {
+                    Interlocked.Decrement(ref inServiceRequests);
+                    if (inServiceRequests == 0 && toShutDown)
+                        Monitor.Pulse(_lock);
+                }
+            }
+        }
+
+        public async static Task<Response> ShutDown(Request request) {
 
             if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
+            toShutDown = true;
+
+            if(inServiceRequests == 0)
+                return new Response { Status = 200, Payload = toShutDownPayload };
 
             String tHeader;
             int timeout;
             request.Headers.TryGetValue("timeout", out tHeader);
-
             if (tHeader == null) { timeout = Timeout.Infinite; }
             else int.TryParse(tHeader, out timeout);
-
-            messageCollections.TryGetValue(request.Path, out MessageQueue mQueue);
-            if (mQueue == null)
+            TimeoutHolder th = new TimeoutHolder(timeout);
+            lock (_lock)
             {
-                return new Response { Status = 404 , Payload = nonExistentQueuePayload };
+                do
+                {
+                    try
+                    {
+                        if ((timeout = th.Value) == 0)
+                        {
+                            return new Response { Status = 204, Payload = timeoutPayload };
+                        }
+                        else if (inServiceRequests == 0)
+                            return new Response { Status = 200, Payload = toShutDownPayload };
+                        Monitor.Wait(_lock, timeout);
+                    }
+                    catch (ThreadInterruptedException)
+                    {
+                        if (inServiceRequests == 0)
+                            return new Response { Status = 200, Payload = toShutDownPayload };
+                        else
+                            return new Response { Status = 500, Payload = serverError };
+                    }
+                } while (true);
             }
-
-            CancellationTokenSource cts = new CancellationTokenSource();
-            CancellationToken ct = cts.Token;
-
-            Message message = await mQueue.TakeAsync(timeout, ct);
-
-            if(message == null)
-            {
-                return new Response { Status = 204 , Payload = timeoutPayload };
-            }
-
-            return new Response { Status = 200 , Payload = message.Payload };
-
         }
-
-        public async static Task<Response> ShutDown() {
-
-            if (toShutDown) return new Response { Status = 503, Payload = toShutDownPayload };
-
-            toShutDown = true;
-        }
-
     }
-
 }

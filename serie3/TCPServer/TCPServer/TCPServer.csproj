@@ -40,6 +40,7 @@
     <Compile Include="model\Message.cs" />
     <Compile Include="assynchronizers\MessageQueue.cs" />
     <Compile Include="assynchronizers\SemaphoreAsync.cs" />
+    <Compile Include="server\TimeoutHolder.cs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Newtonsoft.Json, Version=12.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
