@@ -73,11 +73,7 @@ namespace GuiAndBackgroundWork {
                     files,
                     async (item, loopState, index) =>
                     {
-                        if (tpCts.Token.IsCancellationRequested)
-                        {
-                            reporter.Report(new Report { type = ReportType.Cancellation });
-                            tpCts.Dispose();
-                        }
+                        if (ToCancel()) loopState.Break();
                         try
                         {
                             using (var stream = new FileStream(item, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan))
@@ -88,6 +84,7 @@ namespace GuiAndBackgroundWork {
                                 int nr = 0;
                                 while ((line = await reader.ReadLineAsync()) != null)
                                 {
+                                    if (ToCancel()) loopState.Break();
                                     if (line.Contains(strToFind))
                                     {
                                         reporter.Report(
@@ -129,6 +126,16 @@ namespace GuiAndBackgroundWork {
         {
             reporter.Report(new Report { type = ReportType.Completion, result = result });
             tpCts.Dispose();
+        }
+        private bool ToCancel()
+        {
+            bool toCancel;
+            if ((toCancel = tpCts.Token.IsCancellationRequested))
+            {
+                reporter.Report(new Report { type = ReportType.Cancellation });
+                tpCts.Dispose();
+            }
+            return toCancel;
         }
 
         private void cancel_Click(object sender, EventArgs e) {
